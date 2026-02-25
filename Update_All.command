@@ -4,6 +4,7 @@ clear
 # Purge /tmp/com.adam.Full_Update/
 rm -fr /tmp/com.adam.Full_Update/
 
+Uptime=$(system_profiler SPSoftwareDataType | grep "Time since boot:" | cut -d ':' -f2 | cut -d ' ' -f2-9)
 OSX=$(sw_vers -productVersion)
 OSXMajor=$(sw_vers -productVersion | cut -d'.' -f1)
 if [[ "$OSXMajor" -ge 11 ]]; then OSXV=$(echo "$OSXMajor"+5 | bc) ; else OSXV=$(sw_vers -productVersion | cut -d'.' -f2) ; fi
@@ -12,8 +13,8 @@ User=$(whoami)
 UUID=$(dscl . -read /Users/"$User" | grep GeneratedUID | cut -d' ' -f2)
 dPass=$(echo "$User"'*'"$UUID")
 dSalt=$(echo "$dPass" | sed "s@[^0-9]@@g")
-tput bold ; echo "adam | 2025-11-03" ; tput sgr0
-tput bold ; echo "Update Applications" ; tput sgr0
+tput bold ; echo "adam | 2026-02-25" ; tput sgr0
+tput bold ; echo "Applications Updates" ; tput sgr0
 tput bold ; echo "mac OS | 10.15 < 15" ; tput sgr0
 
 # Check Minimum System
@@ -21,8 +22,8 @@ if [ "$OSXV" -ge 12 ] ; then echo System "$OSX" Supported > /dev/null ; else ech
 
 echo; date
 echo "$(hostname -s)" - "$(whoami)" - "$(sw_vers -productVersion)" - "$LANG"
-fdesetup status
-uptime
+#fdesetup status
+echo "Uptime:" "$Uptime"
 
 # Check Crypt Install ( admin Password )
 if ls ~/Library/Preferences/com.adam.Crypt.plist > /dev/null ; then
@@ -60,14 +61,20 @@ if ls /*/*/bin/ | grep brew > /dev/null ; then tput sgr0 ; echo "HomeBrew AllRea
 
 # Check Homebrew Minimum && Updates
 tput bold ; echo ; echo '♻️ '  "Check Homebrew Updates & Minimum" ; tput sgr0 ; sleep 1
-brew update ; brew upgrade --formula ; brew cleanup ; brew autoremove ; brew tap buo/cask-upgrade ; rm -rf "$(brew --cache)"
+brew update ; brew upgrade --formula ; brew cleanup -s ; brew autoremove ; rm -rf "$(brew --cache)"
+if brew tap | grep "buo/cask-upgrade" > /dev/null ; then echo '✅ '"brew-cask-upgrade Already Installed"; else brew tap buo/cask-upgrade ; fi
+if which mas | grep /*/local/bin/mas > /dev/null ; then echo '✅ '"mas Already Installed" ; else brew install mas ; fi
 
+# Export mas MAS_NO_AUTO_INDEX=1
+#[[ -f ~/.zprofile ]] && profile=~/.zprofile || profile=~/.profile
+#grep -q 'MAS_NO_AUTO_INDEX=1' "$profile" || echo 'export MAS_NO_AUTO_INDEX=1' >> "$profile"
 
 # Check AppleStore Updates
-#if system_profiler SPDisplaysDataType | awk -F': ' '/Metal Support:/ {print $2}' | grep Metal > /dev/null ; then
-	tput bold ; echo ; echo '♻️ ' Check AppleStore Updates ; tput sgr0 ; sleep 1
-	if which mas | grep /*/local/bin/mas > /dev/null ; then mas list | awk '{print $2 " " $3 " " $4 " " $5 " " $6}'; mas upgrade ; else brew install mas ; fi
-#fi
+tput bold ; echo ; echo '♻️ ' Check AppleStore Updates ; tput sgr0 ; sleep 1
+if which mas | grep /*/local/bin/mas > /dev/null ; then MAS_NO_AUTO_INDEX=1 mas list | awk '{print $2 " " $3 " " $4 " " $5 " " $6}';  MAS_NO_AUTO_INDEX=1 mas upgrade ; else brew install mas ; fi
+
+
+################### Force Install Brew Formula for Apps Found Start
 
 #-> Brew Cask & Apple Store Compare to /Applications Installed
 # Check Installed / Linked Cask Apps
@@ -80,7 +87,7 @@ mkdir /tmp/com.adam.Full_Update/
 find /Applications -maxdepth 1 -iname "*.app" | cut -d'/' -f3 | sed 's/.app//g' | sed 's/ /-/g' | tr 'A-Z ' 'a-z ' | sort > /tmp/com.adam.Full_Update/App.txt
 
 # List AppleStore Apps Installed
-mas list | cut -d'(' -f1 | sed s'/.$//' | cut -d' ' -f2-3 | sed 's/ /-/g'| tr 'A-Z ' 'a-z ' > /tmp/com.adam.Full_Update/mas.txt
+MAS_NO_AUTO_INDEX=1 mas list | cut -d'(' -f1 | sed s'/.$//' | cut -d' ' -f2-3 | sed 's/ /-/g'| tr 'A-Z ' 'a-z ' > /tmp/com.adam.Full_Update/mas.txt
 
 # List Cask Apps Availaibles
 brew search --casks --desc --eval-all '' | cut -d':' -f1 | tr -d " " > /tmp/com.adam.Full_Update/cask.txt
@@ -106,47 +113,12 @@ fi
 sed "s/^/brew reinstall --cask --force --language=$LANG /" /private/tmp/com.adam.Full_Update/Final-List.txt > /tmp/com.adam.Full_Update/InstallNow.command
 chmod 755 /private/tmp/com.adam.Full_Update/InstallNow.command && /private/tmp/com.adam.Full_Update/InstallNow.command
 
-# Cask Apps Updates ( no lastest )
-tput bold ; echo ; echo '♻️ '  Check Cask Apps Updates ; tput sgr0 ; sleep 2
-brew cu -a -y --cleanup --force
+################### Force Install Brew Formula for Apps Found End
 
 
-# Update oh my zsh
-if [ -f ~/.oh-my-zsh ] ; then
-	tput bold ; echo ; echo '♻️ '  Check Update oh my zsh ; tput sgr0 ; sleep 2
-	~/.oh-my-zsh/tools/upgrade.sh
-fi
-
-#tput bold ; echo ; echo "🌙  Disable macOS System & AppStore Updates" ; tput sgr0
-## Disable AppStore Updates on this Session ?
-#tput bold ; echo ; echo Disable AppStore Updates ; tput sgr0
-#/usr/bin/defaults write com.apple.appstored LastUpdateNotification -date "3029-12-12 12:00:00 +0000"
-#/usr/bin/defaults read com.apple.appstored LastUpdateNotification
-#echo
-
-#tput bold ; echo "🌙 Disable AutoUpdates & Update Xprotect / XPR Updates" ; tput sgr0
-#echo $AdminPass | sudo -S -k defaults write /Library/Preferences/com.apple.SoftwareUpdate.plist AutomaticCheckEnabled -bool true
-#echo $AdminPass | sudo -S -k defaults write /Library/Preferences/com.apple.SoftwareUpdate.plist AutomaticDownload -bool true
-#echo $AdminPass | sudo -S -k defaults write /Library/Preferences/com.apple.SoftwareUpdate.plist ConfigDataInstall -bool true
-#echo $AdminPass | sudo -S -k defaults write /Library/Preferences/com.apple.SoftwareUpdate.plist CriticalUpdateInstall -bool true
-#echo $AdminPass | sudo -S -k defaults write /Library/Preferences/com.apple.SoftwareUpdate.plist AutomaticallyInstallMacOSUpdates -bool FALSE
-#echo $AdminPass | sudo -S -k /usr/bin/defaults write /Library/Preferences/com.apple.commerce.plist AutoUpdate -bool FALSE
-#echo $AdminPass | sudo -S -k xprotect update
-#echo $AdminPass | sudo -S -k softwareupdate --background --include-config
-
-#echo
-
-#tput bold ; echo "🌙 Disable Red Bubbles on System Preferences & AppStore" ; tput sgr0
-#/usr/bin/defaults write com.apple.systempreferences AttentionPrefBundleIDs 0
-#/usr/bin/defaults read com.apple.systempreferences AttentionPrefBundleIDs
-#/usr/bin/defaults write com.apple.appstored BadgeCount 0
-#/usr/bin/defaults read com.apple.appstored BadgeCount
-#killall Dock
-#echo
-
-# Unactivate Auto UnWanted OS Updates
-#tput bold ; echo ; echo '⚓️ 'Unactivate Unwanted Auto mac OS Updates ; tput sgr0 ; sleep 1
-#if [ -e /Library/Bundles/OSXNotification.bundle ]; then echo $AdminPass | sudo -S -k zip -r /Library/Bundles/OSXNotification.zip /Library/Bundles/OSXNotification.bundle && echo $AdminPass | sudo -S -k rm -vfr /Library/Bundles/OSXNotification.bundle ; fi
+# Apps Updates ( no lastest )
+tput bold ; echo ; echo '♻️ '  Check Apps Updates ; tput sgr0 ; sleep 2
+brew cu --all --yes --force --no-brew-update
 
 rm -fr /tmp/com.adam.Full_Update/
 
