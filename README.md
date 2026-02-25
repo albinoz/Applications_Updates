@@ -10,11 +10,11 @@
 
 #### =-> Download & Execute :
 ```
-cd ~/Desktop && git clone https://github.com/albinoz/Update_All.git && \
-chmod 755 ~/Desktop/Update_All/Update_All.command  && \
-~/Desktop/Update_All/Update_All.command
+cd ~/Desktop && git clone https://github.com/albinoz/Applications_Updates.git && \
+chmod 755 ~/Desktop/Applications_Updates/Applications_Updates.command  && \
+~/Applications_Updates/Update_AllApplications_Updatesl.command
 ```
 
 #### x-> On Error :
 `Please Report with log to`
-https://github.com/albinoz/Update_All/issues
+https://github.com/albinoz/Applications_Updates/issues
