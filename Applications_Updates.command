@@ -69,6 +69,124 @@ if which mas | grep /*/local/bin/mas > /dev/null ; then echo '✅ '"mas Already 
 #[[ -f ~/.zprofile ]] && profile=~/.zprofile || profile=~/.profile
 #grep -q 'MAS_NO_AUTO_INDEX=1' "$profile" || echo 'export MAS_NO_AUTO_INDEX=1' >> "$profile"
 
+################### Patch OpenCore copy-xattrs.swift Start
+
+# Detect OpenCore Legacy Patcher & patch copy-xattrs.swift si nécessaire
+tput bold ; echo ; echo '♻️ ' Check OpenCore Legacy Patcher ; tput sgr0 ; sleep 1
+XATTRS_SWIFT="/usr/local/Homebrew/Library/Homebrew/cask/utils/copy-xattrs.swift"
+
+if nvram 4D1FDA02-38C7-4A6A-9CC6-4BCCA8B30102:opencore-version > /dev/null 2>&1 ; then
+    echo '✅ ' OpenCore Detected
+
+    if [ -f "$XATTRS_SWIFT" ] ; then
+        # Backup original si pas déjà fait
+        if [ ! -f "${XATTRS_SWIFT}.orig" ] ; then
+            echo $AdminPass | sudo -S cp "$XATTRS_SWIFT" "${XATTRS_SWIFT}.orig"
+            echo '✅ ' Backup copy-xattrs.swift.orig Created
+        else
+            echo '✅ ' Backup copy-xattrs.swift.orig Already Exists
+        fi
+
+        # Vérifier si le patch est déjà appliqué
+        if grep -q "errno == 2" "$XATTRS_SWIFT" ; then
+            echo '✅ ' copy-xattrs.swift Already Patched
+        else
+            echo '🔄 ' Patching copy-xattrs.swift...
+            echo $AdminPass | sudo -S tee "$XATTRS_SWIFT" > /dev/null << 'SWIFT_PATCH'
+#!/usr/bin/swift
+
+import Foundation
+
+struct SwiftErr: TextOutputStream {
+    public static var stream = SwiftErr()
+
+    mutating func write(_ string: String) {
+        fputs(string, stderr)
+    }
+}
+
+guard CommandLine.arguments.count >= 3 else {
+    print("Usage: swift copy-xattrs.swift <source> <dest>")
+    exit(2)
+}
+
+CommandLine.arguments[2].withCString { destinationPath in
+    let destinationNamesLength = listxattr(destinationPath, nil, 0, 0)
+    if destinationNamesLength == -1 {
+        // errno 2 = ENOENT : destination absente (OpenCore Legacy), skip silencieux
+        if errno == 2 {
+            exit(0)
+        }
+        print("listxattr for destination failed: \(errno)", to: &SwiftErr.stream)
+        exit(1)
+    }
+    let destinationNamesBuffer = UnsafeMutablePointer<Int8>.allocate(capacity: destinationNamesLength)
+    if listxattr(destinationPath, destinationNamesBuffer, destinationNamesLength, 0) != destinationNamesLength {
+        print("Attributes changed during system call", to: &SwiftErr.stream)
+        exit(1)
+    }
+
+    var destinationNamesIndex = 0
+    while destinationNamesIndex < destinationNamesLength {
+        let attribute = destinationNamesBuffer + destinationNamesIndex
+
+        if removexattr(destinationPath, attribute, 0) != 0 {
+            print("removexattr for \(String(cString: attribute)) failed: \(errno)", to: &SwiftErr.stream)
+            exit(1)
+        }
+
+        destinationNamesIndex += strlen(attribute) + 1
+    }
+    destinationNamesBuffer.deallocate()
+
+    CommandLine.arguments[1].withCString { sourcePath in
+        let sourceNamesLength = listxattr(sourcePath, nil, 0, 0)
+        if sourceNamesLength == -1 {
+            print("listxattr for source failed: \(errno)", to: &SwiftErr.stream)
+            exit(1)
+        }
+        let sourceNamesBuffer = UnsafeMutablePointer<Int8>.allocate(capacity: sourceNamesLength)
+        if listxattr(sourcePath, sourceNamesBuffer, sourceNamesLength, 0) != sourceNamesLength {
+            print("Attributes changed during system call", to: &SwiftErr.stream)
+            exit(1)
+        }
+
+        var sourceNamesIndex = 0
+        while sourceNamesIndex < sourceNamesLength {
+            let attribute = sourceNamesBuffer + sourceNamesIndex
+
+            let valueLength = getxattr(sourcePath, attribute, nil, 0, 0, 0)
+            if valueLength == -1 {
+                print("getxattr for \(String(cString: attribute)) failed: \(errno)", to: &SwiftErr.stream)
+                exit(1)
+            }
+            let valueBuffer = UnsafeMutablePointer<Int8>.allocate(capacity: valueLength)
+            if getxattr(sourcePath, attribute, valueBuffer, valueLength, 0, 0) != valueLength {
+                print("Attributes changed during system call", to: &SwiftErr.stream)
+                exit(1)
+            }
+
+            if setxattr(destinationPath, attribute, valueBuffer, valueLength, 0, 0) != 0 {
+                print("setxattr for \(String(cString: attribute)) failed: \(errno)", to: &SwiftErr.stream)
+                exit(1)
+            }
+
+            valueBuffer.deallocate()
+            sourceNamesIndex += strlen(attribute) + 1
+        }
+        sourceNamesBuffer.deallocate()
+    }
+}
+SWIFT_PATCH
+            echo '✅ ' copy-xattrs.swift Patched OK
+        fi
+    fi
+else
+    echo '✅ ' OpenCore Not Detected - No Patch Needed
+fi
+
+################### Patch OpenCore copy-xattrs.swift End
+
 # Check AppleStore Updates
 tput bold ; echo ; echo '♻️ ' Check AppleStore Updates ; tput sgr0 ; sleep 1
 if which mas | grep /*/local/bin/mas > /dev/null ; then MAS_NO_AUTO_INDEX=1 mas list | awk '{print $2 " " $3 " " $4 " " $5 " " $6}';  MAS_NO_AUTO_INDEX=1 mas upgrade ; else brew install mas ; fi
@@ -83,17 +201,36 @@ tput bold ; echo ; echo '♻️ ' Check Installed / Linked Cask Apps ; tput sgr0
 # Create /tmp/com.adam.Full_Update/ Folder
 mkdir /tmp/com.adam.Full_Update/
 
-# List /Applications Installed
-find /Applications -maxdepth 1 -iname "*.app" | cut -d'/' -f3 | sed 's/.app//g' | sed 's/ /-/g' | tr 'A-Z ' 'a-z ' | sort > /tmp/com.adam.Full_Update/App.txt
+# List /Applications Installed (normalisation accents + nettoyage)
+find /Applications -maxdepth 1 -iname "*.app" \
+  | cut -d'/' -f3 \
+  | sed 's/\.app$//g' \
+  | sed 's/ /-/g' \
+  | tr 'A-Z' 'a-z' \
+  | sed 's/é/e/g; s/è/e/g; s/ê/e/g; s/ë/e/g' \
+  | sed 's/à/a/g; s/â/a/g; s/ä/a/g' \
+  | sed 's/ù/u/g; s/û/u/g; s/ü/u/g' \
+  | sed 's/î/i/g; s/ï/i/g' \
+  | sed 's/ô/o/g; s/ö/o/g' \
+  | sed 's/ç/c/g' \
+  | sed 's/[^a-z0-9-]//g' \
+  | sed 's/-*$//g' \
+  | sort -u > /tmp/com.adam.Full_Update/App.txt
 
 # List AppleStore Apps Installed
 MAS_NO_AUTO_INDEX=1 mas list | cut -d'(' -f1 | sed s'/.$//' | cut -d' ' -f2-3 | sed 's/ /-/g'| tr 'A-Z ' 'a-z ' > /tmp/com.adam.Full_Update/mas.txt
 
-# List Cask Apps Availaibles
-brew search --casks --desc --eval-all '' | cut -d':' -f1 | tr -d " " > /tmp/com.adam.Full_Update/cask.txt
+# List Cask Apps Availaibles (via API JSON Homebrew)
+curl -s https://formulae.brew.sh/api/cask.json \
+  | /usr/bin/python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+for c in data:
+    print(c['token'])
+" | sort > /tmp/com.adam.Full_Update/cask.txt
 
 # Merge Only Installed /Applications from Cask List
-awk 'NR==FNR{arr[$0];next} $0 in arr' /tmp/com.adam.Full_Update/App.txt /tmp/com.adam.Full_Update/cask.txt > /tmp/com.adam.Full_Update/Installed.txt
+awk 'NR==FNR{arr[$0];next} $0 in arr' /tmp/com.adam.Full_Update/cask.txt /tmp/com.adam.Full_Update/App.txt > /tmp/com.adam.Full_Update/Installed.txt
 
 # Remove Cask Apps AllReady Installed from AppleStore
 awk 'NR==FNR{a[$0];next} !($0 in a)' /tmp/com.adam.Full_Update/mas.txt /tmp/com.adam.Full_Update/Installed.txt > /tmp/com.adam.Full_Update/nomas-Installed.txt
@@ -110,7 +247,7 @@ awk 'NR==FNR{a[$0];next} !($0 in a)' /tmp/com.adam.Full_Update/cask-installed.tx
 fi
 
 # Force Reinstall Cask Apps without Link Found By LANG Used
-sed "s/^/brew reinstall --cask --force --language=$LANG /" /private/tmp/com.adam.Full_Update/Final-List.txt > /tmp/com.adam.Full_Update/InstallNow.command
+sed "s/^/brew reinstall --cask --force --adopt --language=$LANG /" /private/tmp/com.adam.Full_Update/Final-List.txt > /tmp/com.adam.Full_Update/InstallNow.command
 chmod 755 /private/tmp/com.adam.Full_Update/InstallNow.command && /private/tmp/com.adam.Full_Update/InstallNow.command
 
 ################### Force Install Brew Formula for Apps Found End
