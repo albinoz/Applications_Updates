@@ -13,7 +13,34 @@ User=$(whoami)
 UUID=$(dscl . -read /Users/"$User" | grep GeneratedUID | cut -d' ' -f2)
 dPass=$(echo "$User"'*'"$UUID")
 dSalt=$(echo "$dPass" | sed "s@[^0-9]@@g")
-tput bold ; echo "adam | 2026-02-25" ; tput sgr0
+tput bold ; echo "adam | 2026-02-25 > 2026-06-16" ; tput sgr0
+# Changelog:
+# 2026-02-25 v1.0 - Version initiale
+# 2026-06-11 v1.1 - Fix patch copy-xattrs.swift : separation sudo -S (auth) et sudo tee (ecriture)
+#                   Le mot de passe AdminPass etait ecrit en 1ere ligne du fichier Swift (fd3/fd4)
+#                   Correction : echo AdminPass | sudo -S true puis sudo tee sans -S via heredoc
+# 2026-06-11 v1.2 - Migration openssl aes-256-cbc vers -pbkdf2 -iter 100000
+#                   Suppression -iv dSalt (salt desormais gere en interne par PBKDF2)
+#                   Corrige warnings deprecated key derivation et hex string is too short
+#                   Le Crypt.plist existant sera invalide au 1er lancement -> suppression auto -> recrea
+# 2026-06-11 v1.3 - Ajout yes | devant brew update et brew upgrade --formula
+#                   Homebrew 6.0.0 demande desormais confirmation interactive -> reponse automatique y
+# 2026-06-12 v1.4 - Ajout 2>/dev/null sur yes | pour supprimer l'affichage des y en cascade
+#                   yes envoie un flux infini de y sur stdout -> python3 les affichait tous visuellement
+# 2026-06-13 v1.5 - Migration Crypt plist vers defaults read/write/delete (cfprefsd natif)
+#                   PlistBuddy + cat|sed ecrits hors cfprefsd -> plist purgé par le systeme au lendemain
+#                   defaults write/read/delete -> cfprefsd est proprietaire -> fichier persiste
+# 2026-06-13 v1.6 - Correction yes | sur Apple Silicon (ARM) : 2>/dev/null insuffisant
+#                   Ajout > /dev/null 2>&1 pour supprimer stdout ET stderr sur x86 et ARM
+# 2026-06-13 v1.7 - Remplacement yes par NONINTERACTIVE=1 (methode officielle Homebrew CI/CD)
+#                   yes tournait a 100% CPU en tache de fond (pipe infini non termine)
+#                   NONINTERACTIVE=1 supprime toutes les questions interactives sans CPU inutile
+# 2026-06-16 v1.8 - Ajout sudo -k avant installeur Homebrew (invalide ticket sudo herite du contexte parent)
+#                   Ajout chown -R $(whoami) /usr/local/Cellar/ apres installation
+#                   Evite que l'installeur cree des fichiers en root -> brew cleanup sans erreur Permission denied
+# 2026-06-20 v1.9 - HOMEBREW_NO_ENV_HINTS=1 brew update --auto-update
+#                   brew update -y
+#                   f which mas | grep mas > /dev/null (M1)
 tput bold ; echo "Applications Updates" ; tput sgr0
 tput bold ; echo "mac OS | 10.15 < 15" ; tput sgr0
 
@@ -26,15 +53,18 @@ echo "$(hostname -s)" - "$(whoami)" - "$(sw_vers -productVersion)" - "$LANG"
 echo "Uptime:" "$Uptime"
 
 # Check Crypt Install ( admin Password )
-if ls ~/Library/Preferences/com.adam.Crypt.plist > /dev/null ; then
+# defaults read/write gere le plist via cfprefsd -> le fichier lui appartient -> jamais purgé
+if defaults read com.adam.Crypt Pass > /dev/null 2>&1 ; then
 	echo ; echo '✅ ' Admin Crypt AllReady Installed
-	Pass=`cat ~/Library/Preferences/com.adam.Crypt.plist | sed -n 6p | cut -d'>' -f2 | cut -d'<' -f1`
-	AdminPass=`echo $Pass | openssl aes-256-cbc -a -d -pass pass:$dPass -iv $dSalt`
-		if echo $AdminPass | sudo -S -k echo '🔒 ' Test KeyPass ; then
+	# Lecture de la valeur chiffree via defaults read (cfprefsd natif)
+	Pass=$(defaults read com.adam.Crypt Pass)
+	AdminPass=`echo $Pass | openssl aes-256-cbc -a -d -pbkdf2 -iter 100000 -pass pass:$dPass`
+		if echo "$AdminPass" | sudo -S -k echo '🔒 ' Test KeyPass ; then
 			echo '🔓 ' Good Password - You Shall Pass
 		else
 			echo '🔒 ' Wrong Password - You Shall Not Pass !
-			rm -vfr ~/Library/Preferences/com.adam.Crypt.plist
+			# Suppression propre via defaults delete (cfprefsd) plutot que rm
+			defaults delete com.adam.Crypt
 			exit
 		fi
 else
@@ -43,11 +73,13 @@ else
 		echo '🔄 ' Admin Crypt Install
 		echo -n 'Password : ' && read -s password
 
-			if echo $password | sudo -S -k echo '🔓 ' Good Password - You Shall Pass ; then
-				AdminPass=`echo $password | openssl aes-256-cbc -a -pass pass:$dPass -iv $dSalt`
-				/usr/libexec/PlistBuddy -c "add Crypt_Pass string $AdminPass" ~/Library/Preferences/com.adam.Crypt.plist
-				Pass=`cat ~/Library/Preferences/com.adam.Crypt.plist | sed -n 6p | cut -d'>' -f2 | cut -d'<' -f1`
-				AdminPass=`echo $Pass | openssl aes-256-cbc -a -d -pass pass:$dPass -iv $dSalt`
+			if echo "$password" | sudo -S -k echo '🔓 ' Good Password - You Shall Pass ; then
+				AdminPass=`echo $password | openssl aes-256-cbc -a -pbkdf2 -iter 100000 -pass pass:$dPass`
+				# Ecriture via defaults write (cfprefsd natif) -> plist persiste entre sessions
+				defaults write com.adam.Crypt Pass "$AdminPass"
+				# Relecture pour verification immediate apres ecriture
+				Pass=$(defaults read com.adam.Crypt Pass)
+				AdminPass=`echo $Pass | openssl aes-256-cbc -a -d -pbkdf2 -iter 100000 -pass pass:$dPass`
 				break
 			else
 				echo '🔒 ' Wrong Password - You Shall Not Pass !
@@ -57,13 +89,13 @@ fi
 
 # Check Homebrew Install
 tput bold ; echo ; echo '♻️ ' Check Homebrew Install ; tput sgr0 ; sleep 1
-if ls /*/*/bin/ | grep brew > /dev/null ; then tput sgr0 ; echo "HomeBrew AllReady Installed" ; else tput bold ; echo "Installing HomeBrew" ; tput sgr0 ; /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/master/install.sh)" ; fi
+if ls /*/*/bin/ | grep brew > /dev/null ; then tput sgr0 ; echo "HomeBrew AllReady Installed" ; else tput bold ; echo "Installing HomeBrew" ; tput sgr0 ; sudo -k ; /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/master/install.sh)" ; echo "$AdminPass" | sudo -S chown -R $(whoami) /usr/local/Cellar/ ; fi
 
 # Check Homebrew Minimum && Updates
 tput bold ; echo ; echo '♻️ '  "Check Homebrew Updates & Minimum" ; tput sgr0 ; sleep 1
-brew update ; brew upgrade --formula ; brew cleanup -s ; brew autoremove ; rm -rf "$(brew --cache)"
+HOMEBREW_NO_ENV_HINTS=1 brew update --auto-update ; brew upgrade --formula -y ; brew cleanup -s ; brew autoremove ; rm -rf "$(brew --cache)"
 if brew tap | grep "buo/cask-upgrade" > /dev/null ; then echo '✅ '"brew-cask-upgrade Already Installed"; else brew tap buo/cask-upgrade ; fi
-if which mas | grep /*/local/bin/mas > /dev/null ; then echo '✅ '"mas Already Installed" ; else brew install mas ; fi
+if which mas | grep mas > /dev/null ; then echo '✅ '"mas Already Installed" ; else brew install mas ; fi
 
 # Export mas MAS_NO_AUTO_INDEX=1
 #[[ -f ~/.zprofile ]] && profile=~/.zprofile || profile=~/.profile
@@ -81,7 +113,7 @@ if nvram 4D1FDA02-38C7-4A6A-9CC6-4BCCA8B30102:opencore-version > /dev/null 2>&1 
     if [ -f "$XATTRS_SWIFT" ] ; then
         # Backup original si pas déjà fait
         if [ ! -f "${XATTRS_SWIFT}.orig" ] ; then
-            echo $AdminPass | sudo -S cp "$XATTRS_SWIFT" "${XATTRS_SWIFT}.orig"
+            echo "$AdminPass" | sudo -S cp "$XATTRS_SWIFT" "${XATTRS_SWIFT}.orig"
             echo '✅ ' Backup copy-xattrs.swift.orig Created
         else
             echo '✅ ' Backup copy-xattrs.swift.orig Already Exists
@@ -92,7 +124,11 @@ if nvram 4D1FDA02-38C7-4A6A-9CC6-4BCCA8B30102:opencore-version > /dev/null 2>&1 
             echo '✅ ' copy-xattrs.swift Already Patched
         else
             echo '🔄 ' Patching copy-xattrs.swift...
-            echo $AdminPass | sudo -S tee "$XATTRS_SWIFT" > /dev/null << 'SWIFT_PATCH'
+            # Authentification sudo en amont, séparée du flux d'écriture
+            # Evite que le mot de passe soit écrit en première ligne du fichier Swift
+            echo "$AdminPass" | sudo -S true
+            # Ecriture du contenu Swift seul via heredoc — mot de passe hors du flux
+            sudo tee "$XATTRS_SWIFT" > /dev/null << 'SWIFT_PATCH'
 #!/usr/bin/swift
 
 import Foundation
@@ -189,7 +225,7 @@ fi
 
 # Check AppleStore Updates
 tput bold ; echo ; echo '♻️ ' Check AppleStore Updates ; tput sgr0 ; sleep 1
-if which mas | grep /*/local/bin/mas > /dev/null ; then MAS_NO_AUTO_INDEX=1 mas list | awk '{print $2 " " $3 " " $4 " " $5 " " $6}';  MAS_NO_AUTO_INDEX=1 mas upgrade ; else brew install mas ; fi
+if which mas | grep mas > /dev/null ; then MAS_NO_AUTO_INDEX=1 mas list | awk '{print $2 " " $3 " " $4 " " $5 " " $6}';  MAS_NO_AUTO_INDEX=1 mas upgrade ; else brew install mas ; fi
 
 
 ################### Force Install Brew Formula for Apps Found Start
